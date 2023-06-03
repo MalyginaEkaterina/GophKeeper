@@ -1,0 +1,79 @@
+syntax = "proto3";
+
+package common;
+
+option go_package = "common/proto";
+
+message RegisterReq {
+  string login = 1;
+  string password = 2;
+}
+
+message RegisterResp {
+}
+
+message AuthReq {
+  string login = 1;
+  string password = 2;
+}
+
+message AuthResp {
+  string token = 1;
+}
+
+message Value {
+  bytes data = 1;
+  string metadata = 2;
+  int32 version = 3;
+}
+
+message GetReq {
+  string key = 1;
+}
+
+message GetResp {
+  Value value = 1;
+}
+
+message PutReq {
+  string key = 1;
+  Value value = 2;
+}
+
+message PutRequests {
+  repeated PutReq list = 1;
+}
+
+message PutResp {
+}
+
+message ListReq {
+}
+
+message ListResp {
+  repeated string keys = 1;
+}
+
+message GetAllReq {
+}
+
+message GetAllResp {
+  map<string, Value> result = 1;
+}
+
+message Cache {
+  map<string, Value> data = 1;
+}
+
+service User {
+  rpc Register(RegisterReq) returns(RegisterResp);
+  rpc Auth(AuthReq) returns (AuthResp);
+}
+
+service Keeper {
+  rpc Get(GetReq) returns (GetResp);
+  rpc Put(PutReq) returns (PutResp);
+  rpc List(ListReq) returns (ListResp);
+  rpc GetAll(GetAllReq) returns (GetAllResp);
+}
+
