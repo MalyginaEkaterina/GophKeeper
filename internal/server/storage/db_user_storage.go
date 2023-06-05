@@ -17,7 +17,7 @@ type DBUserStorage struct {
 var _ UserStorage = (*DBUserStorage)(nil)
 
 func NewDBUserStorage(db *sql.DB) (*DBUserStorage, error) {
-	stmtInsertUser, err := db.Prepare("INSERT INTO users (login, password) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING id")
+	stmtInsertUser, err := db.Prepare("INSERT INTO users (login, password, data_version) VALUES ($1, $2, 0) ON CONFLICT DO NOTHING RETURNING id")
 	if err != nil {
 		return nil, err
 	}

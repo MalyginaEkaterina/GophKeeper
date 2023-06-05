@@ -1,3 +1,2 @@
-DROP TABLE orders;
-DROP TABLE transactions;
+DROP TABLE data;
 DROP TABLE users;

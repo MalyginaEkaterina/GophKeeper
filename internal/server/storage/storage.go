@@ -8,6 +8,7 @@ import (
 	"github.com/MalyginaEkaterina/GophKeeper/internal/server"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
+	_ "github.com/golang-migrate/migrate/v4/source/file"
 )
 
 var (
@@ -26,7 +27,7 @@ type DataStorage interface {
 	GetByKey(ctx context.Context, userID server.UserID, key string) (*pb.Value, error)
 	Put(ctx context.Context, userID server.UserID, key string, value *pb.Value) error
 	GetAllKeysByUser(ctx context.Context, userID server.UserID) ([]string, error)
-	GetAllByUser(ctx context.Context, userID server.UserID) (map[string]*pb.Value, error)
+	GetAllByUser(ctx context.Context, userID server.UserID, version int32) (map[string]*pb.Value, int32, error)
 }
 
 func DoMigrations(db *sql.DB) error {

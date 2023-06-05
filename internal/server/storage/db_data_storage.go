@@ -10,12 +10,13 @@ import (
 )
 
 type DBDataStorage struct {
-	db            *sql.DB
-	getByKey      *sql.Stmt
-	insert        *sql.Stmt
-	update        *sql.Stmt
-	getKeysByUser *sql.Stmt
-	getAllByUser  *sql.Stmt
+	db             *sql.DB
+	getByKey       *sql.Stmt
+	insert         *sql.Stmt
+	update         *sql.Stmt
+	getKeysByUser  *sql.Stmt
+	getAllByUser   *sql.Stmt
+	updDataVersion *sql.Stmt
 }
 
 var _ DataStorage = (*DBDataStorage)(nil)
@@ -37,18 +38,28 @@ func NewDBDataStorage(db *sql.DB) (*DBDataStorage, error) {
 	if err != nil {
 		return nil, err
 	}
-	stmtGetAllByUser, err := db.Prepare("SELECT key, data, metadata, version from data WHERE user_id = $1")
+	const selectAll = `
+		SELECT d.key, d.data, d.metadata, d.version, u.data_version
+		FROM data d JOIN users u on u.id = d.user_id
+		WHERE u.id = $1 AND u.data_version > $2
+	`
+	stmtGetAllByUser, err := db.Prepare(selectAll)
+	if err != nil {
+		return nil, err
+	}
+	stmtUpdDataVersion, err := db.Prepare("UPDATE users SET data_version = data_version+1 WHERE id = $1")
 	if err != nil {
 		return nil, err
 	}
 
 	return &DBDataStorage{
-		db:            db,
-		getByKey:      stmtGetByKey,
-		insert:        stmtInsert,
-		update:        stmtUpdate,
-		getKeysByUser: stmtGetKeysByUser,
-		getAllByUser:  stmtGetAllByUser,
+		db:             db,
+		getByKey:       stmtGetByKey,
+		insert:         stmtInsert,
+		update:         stmtUpdate,
+		getKeysByUser:  stmtGetKeysByUser,
+		getAllByUser:   stmtGetAllByUser,
+		updDataVersion: stmtUpdDataVersion,
 	}, nil
 }
 
@@ -65,8 +76,14 @@ func (d *DBDataStorage) GetByKey(ctx context.Context, userID server.UserID, key 
 }
 
 func (d *DBDataStorage) Put(ctx context.Context, userID server.UserID, key string, value *pb.Value) error {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction error: %w", err)
+	}
+	defer tx.Rollback()
 	if value.Version == 1 {
-		row := d.insert.QueryRowContext(ctx, userID, key, value.Data, value.Metadata, value.Version)
+		txInsertStmt := tx.StmtContext(ctx, d.insert)
+		row := txInsertStmt.QueryRowContext(ctx, userID, key, value.Data, value.Metadata, value.Version)
 		var insKey string
 		err := row.Scan(&insKey)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -74,7 +91,6 @@ func (d *DBDataStorage) Put(ctx context.Context, userID server.UserID, key strin
 		} else if err != nil {
 			return fmt.Errorf("insert data error: %w", err)
 		}
-		return nil
 	} else {
 		res, err := d.update.ExecContext(ctx, userID, key, value.Data, value.Metadata, value.Version)
 		if err != nil {
@@ -87,8 +103,17 @@ func (d *DBDataStorage) Put(ctx context.Context, userID server.UserID, key strin
 		if count == 0 {
 			return ErrConflict
 		}
-		return nil
 	}
+	txUpdDataVersionStmt := tx.StmtContext(ctx, d.updDataVersion)
+	_, err = txUpdDataVersionStmt.ExecContext(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("update data version error: %w", err)
+	}
+	err = tx.Commit()
+	if err != nil {
+		return fmt.Errorf("commit error: %w", err)
+	}
+	return nil
 }
 
 func (d *DBDataStorage) GetAllKeysByUser(ctx context.Context, userID server.UserID) ([]string, error) {
@@ -116,30 +141,35 @@ func (d *DBDataStorage) GetAllKeysByUser(ctx context.Context, userID server.User
 	return userKeys, nil
 }
 
-func (d *DBDataStorage) GetAllByUser(ctx context.Context, userID server.UserID) (map[string]*pb.Value, error) {
-	rows, err := d.getAllByUser.QueryContext(ctx, userID)
+func (d *DBDataStorage) GetAllByUser(ctx context.Context, userID server.UserID, version int32) (map[string]*pb.Value, int32, error) {
+	rows, err := d.getAllByUser.QueryContext(ctx, userID, version)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 	userValues := make(map[string]*pb.Value)
+	var currVersion int32
 
 	for rows.Next() {
 		var key string
 		var value pb.Value
-		err = rows.Scan(&key, &value.Data, &value.Metadata, &value.Version)
+		err = rows.Scan(&key, &value.Data, &value.Metadata, &value.Version, &currVersion)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		userValues[key] = &value
 	}
 
 	err = rows.Err()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
-	return userValues, nil
+	if len(userValues) == 0 {
+		return nil, 0, ErrNotFound
+	}
+
+	return userValues, currVersion, nil
 }
 
 func (d *DBDataStorage) Close() {
@@ -148,4 +178,5 @@ func (d *DBDataStorage) Close() {
 	d.update.Close()
 	d.getKeysByUser.Close()
 	d.getAllByUser.Close()
+	d.updDataVersion.Close()
 }

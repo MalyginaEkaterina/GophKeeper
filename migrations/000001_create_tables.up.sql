@@ -1,8 +1,9 @@
 CREATE TABLE users
 (
-    id       serial PRIMARY KEY,
-    login    varchar NOT NULL,
-    password varchar NOT NULL,
+    id           serial PRIMARY KEY,
+    login        varchar NOT NULL,
+    password     varchar NOT NULL,
+    data_version integer NOT NULL,
     UNIQUE (login)
 );
 

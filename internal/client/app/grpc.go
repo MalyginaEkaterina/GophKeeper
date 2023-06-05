@@ -97,20 +97,22 @@ func (g *GrpcClient) getByKey(key string) (*pb.Value, error) {
 	return resp.Value, nil
 }
 
-func (g *GrpcClient) getAll() (map[string]*pb.Value, error) {
+func (g *GrpcClient) getAll(version int32) (map[string]*pb.Value, int32, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	resp, err := g.keeperClient.GetAll(ctx, &pb.GetAllReq{})
+	resp, err := g.keeperClient.GetAll(ctx, &pb.GetAllReq{Version: version})
 	if err != nil {
 		if e, ok := status.FromError(err); ok {
 			if e.Code() == codes.Unavailable || e.Code() == codes.DeadlineExceeded {
-				return nil, errServerUnavailable
+				return nil, 0, errServerUnavailable
+			} else if e.Code() == codes.NotFound {
+				return nil, 0, errDataNotFound
 			}
-			return nil, fmt.Errorf("getting all error: %s, %s", e.Code(), e.Message())
+			return nil, 0, fmt.Errorf("getting all error: %s, %s", e.Code(), e.Message())
 		}
-		return nil, fmt.Errorf("getting all error: %w", err)
+		return nil, 0, fmt.Errorf("getting all error: %w", err)
 	}
-	return resp.Result, nil
+	return resp.Result, resp.Version, nil
 }
 
 func (g *GrpcClient) getKeyList() ([]string, error) {

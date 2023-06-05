@@ -49,11 +49,13 @@ func (s *KeeperServer) List(ctx context.Context, _ *pb.ListReq) (*pb.ListResp, e
 	return &pb.ListResp{Keys: keys}, nil
 }
 
-func (s *KeeperServer) GetAll(ctx context.Context, _ *pb.GetAllReq) (*pb.GetAllResp, error) {
+func (s *KeeperServer) GetAll(ctx context.Context, in *pb.GetAllReq) (*pb.GetAllResp, error) {
 	userID := GetUserIDFromContext(ctx)
-	result, err := s.dataStore.GetAllByUser(ctx, userID)
-	if err != nil {
+	result, currVersion, err := s.dataStore.GetAllByUser(ctx, userID, in.Version)
+	if errors.Is(err, storage.ErrNotFound) {
+		return nil, status.Error(codes.NotFound, "New data not found")
+	} else if err != nil {
 		return nil, status.Error(codes.Internal, "Internal server error")
 	}
-	return &pb.GetAllResp{Result: result}, nil
+	return &pb.GetAllResp{Result: result, Version: currVersion}, nil
 }

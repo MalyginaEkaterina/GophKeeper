@@ -32,8 +32,6 @@ func Start() {
 	var cfg server.Config
 	flag.StringVar(&cfg.Address, "a", "localhost:3200", "address to listen on")
 	flag.StringVar(&cfg.DatabaseURI, "d", "", "database connection string")
-	flag.StringVar(&cfg.FileUserStoragePath, "fu", "", "file data storage path")
-	flag.StringVar(&cfg.FileDataStoragePath, "fd", "", "file user storage path")
 	flag.StringVar(&cfg.SecretFilePath, "s", "", "path to file with secret")
 	flag.Parse()
 	err := env.Parse(&cfg)
@@ -118,8 +116,9 @@ func initStore(cfg server.Config) (*sql.DB, storage.UserStorage, storage.DataSto
 		}
 	} else {
 		log.Printf("Using cached storage")
-		usersStore = storage.NewCachedFileUserStorage()
-		dataStore = storage.NewCachedFileDataStorage()
+		cachedStorage := storage.NewCachedStorage()
+		usersStore = cachedStorage
+		dataStore = cachedStorage
 	}
 	return db, usersStore, dataStore, nil
 }

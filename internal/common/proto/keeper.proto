@@ -55,10 +55,12 @@ message ListResp {
 }
 
 message GetAllReq {
+  int32 version = 1;
 }
 
 message GetAllResp {
   map<string, Value> result = 1;
+  int32 version = 2;
 }
 
 message Cache {

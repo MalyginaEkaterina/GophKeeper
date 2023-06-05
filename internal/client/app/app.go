@@ -2,6 +2,7 @@ package app
 
 import (
 	"bufio"
+	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -9,14 +10,18 @@ import (
 	pb "github.com/MalyginaEkaterina/GophKeeper/internal/common/proto"
 	"golang.org/x/crypto/ssh/terminal"
 	"google.golang.org/protobuf/proto"
+	"log"
 	"os"
+	"path"
 	"strings"
 	"time"
 )
 
 const (
-	timeout            = 30 * time.Second
-	flushIntoFileAfter = 30 * time.Second
+	timeout             = 30 * time.Second
+	flushIntoFileAfter  = 30 * time.Second
+	syncWithServerAfter = 30 * time.Second
+	logFileName         = "goph_keeper.log"
 )
 
 var (
@@ -31,6 +36,7 @@ var (
 
 type App struct {
 	stdin *bufio.Reader
+	log   *log.Logger
 
 	grpcClient *GrpcClient
 
@@ -61,6 +67,7 @@ func (a *App) prompt(message string) {
 func (a *App) readString() string {
 	s, err := a.stdin.ReadString('\n')
 	if err != nil {
+		fmt.Println(err)
 		panic("Failed to read from stdin")
 	}
 	return strings.TrimSpace(s)
@@ -80,13 +87,26 @@ func Start() {
 	app.grpcClient = newGrpcClient(serverAddress, app.creds.getToken)
 	defer app.grpcClient.Close()
 
+	dirname, err := os.UserHomeDir()
+	if err != nil {
+		panic("Getting user home directory error")
+	}
+	logPath := path.Join(dirname, logFileName)
+	flog, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer flog.Close()
+	app.log = log.New(flog, "", log.LstdFlags)
+
+	ctx, cancel := context.WithCancel(context.Background())
 	for {
-		app.doLogin()
+		app.doLogin(ctx)
 		if !app.doKeep() {
 			break
 		}
 	}
-
+	cancel()
 	app.flushCacheIntoFile()
 }
 
@@ -94,22 +114,33 @@ func (a *App) flushCacheIntoFile() {
 	password := a.creds.getPassword()
 	if password != "" {
 		if err := a.cache.flushIntoFile(password); err != nil {
-			// TODO: log
+			a.log.Printf("Flush cache into file error: %s\n", err.Error())
 		}
 	}
 }
 
-func (a *App) runFlush() {
-	flushTick := time.NewTicker(flushIntoFileAfter)
+func (a *App) runFlush(ctx context.Context) {
+	ticker := time.NewTicker(flushIntoFileAfter)
 	for {
 		select {
-		case <-flushTick.C:
-			password := a.creds.getPassword()
-			if password != "" {
-				if err := a.cache.flushIntoFile(password); err != nil {
-					// TODO: log
-				}
+		case <-ticker.C:
+			a.flushCacheIntoFile()
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (a *App) runSyncWithServer(ctx context.Context) {
+	ticker := time.NewTicker(syncWithServerAfter)
+	for {
+		select {
+		case <-ticker.C:
+			if a.creds.getToken() != "" {
+				_ = a.fillCacheFromServer()
 			}
+		case <-ctx.Done():
+			return
 		}
 	}
 }
@@ -231,7 +262,7 @@ func (a *App) putByKey(key string, md string, data []byte) error {
 			return err
 		} else if err != nil {
 			fmt.Println("Got error from server while putting data")
-			//TODO log
+			a.log.Printf("Got error from server while putting data: %s\n", err.Error())
 			return err
 		}
 	}
@@ -249,8 +280,10 @@ func (a *App) solveConflict(key string, newMetadata string, newData []byte) erro
 		return err
 	}
 	a.cache.put(key, value)
-	fmt.Println("Conflicting version on the server:")
+	fmt.Printf("Conflicting version on the server fok key %s:\n", key)
 	a.printValue(value)
+	fmt.Println("Offline version:")
+	a.printValue(&pb.Value{Data: newData, Metadata: newMetadata})
 	for {
 		a.prompt("Enter 'u' to update, 'k' to keep the server version")
 		command := a.readString()
@@ -267,13 +300,15 @@ func (a *App) solveConflict(key string, newMetadata string, newData []byte) erro
 }
 
 func (a *App) fillCacheFromServer() error {
-	serverData, err := a.grpcClient.getAll()
-	if err != nil {
-		//TODO log
+	lastVersion := a.cache.getVersion()
+	serverData, currVersion, err := a.grpcClient.getAll(lastVersion)
+	if errors.Is(err, errDataNotFound) {
+		return nil
+	} else if err != nil {
+		a.log.Printf("Fill cache from server error: %s\n", err.Error())
 		return err
 	}
-	a.cache.setCache(serverData)
-	fmt.Println("Data synchronization completed")
+	a.cache.setCache(serverData, currVersion)
 	return nil
 }
 
@@ -293,7 +328,7 @@ func (a *App) getByKey(key string) error {
 		} else if errors.Is(err, errServerUnavailable) {
 			fmt.Println("Server unavailable")
 		} else {
-			//TODO log
+			a.log.Printf("Got error from server on getting by key: %s\n", err.Error())
 		}
 		return err
 	}
@@ -315,7 +350,7 @@ func (a *App) getKeyList() error {
 		} else if errors.Is(err, errServerUnavailable) {
 			fmt.Println("Server unavailable")
 		} else {
-			//TODO log
+			a.log.Printf("Got error from server on getting key list: %s\n", err.Error())
 		}
 		return err
 	}
@@ -335,7 +370,7 @@ func (a *App) auth(username, password string) error {
 		a.startOffline()
 		return err
 	} else if err != nil {
-		//ToDo log
+		a.log.Printf("Got error from server on auth request: %s\n", err.Error())
 		fmt.Println("Authentication failed")
 		return err
 	}
@@ -370,18 +405,21 @@ func (a *App) auth(username, password string) error {
 	if errors.Is(err, errServerUnavailable) {
 		a.startOffline()
 		return err
+	} else if err == nil {
+		fmt.Println("Data synchronization completed")
 	}
 	err = a.cache.flushIntoFile(a.creds.getPassword())
 	if err != nil {
-		//ToDo log
+		a.log.Printf("Flush cache into file error: %s\n", err.Error())
 	}
 	return nil
 }
 
-func (a *App) doLogin() {
+func (a *App) doLogin(ctx context.Context) {
 	defer func() {
 		if !a.wasFirstLogin {
-			go a.runFlush()
+			go a.runFlush(ctx)
+			go a.runSyncWithServer(ctx)
 			a.wasFirstLogin = true
 		}
 	}()
@@ -430,7 +468,7 @@ func (a *App) doOfflineLogin() bool {
 		return false
 	} else if err != nil {
 		fmt.Println("Local data decryption error")
-		//ToDo log
+		a.log.Printf("Fill cache from file error: %s\n", err.Error())
 		return false
 	}
 	a.creds.setUsername(username)
@@ -546,8 +584,8 @@ func (a *App) readData() []byte {
 				data.Data = &cpb.Data_TextData{TextData: &cpb.Data_Text{Text: text}}
 			case "b":
 				a.prompt("Enter file name")
-				path := a.readString()
-				binData, err := os.ReadFile(path)
+				binDataPath := a.readString()
+				binData, err := os.ReadFile(binDataPath)
 				if err != nil {
 					fmt.Println("Read file error", err)
 					continue
@@ -582,11 +620,11 @@ func (a *App) tryPutRequests() error {
 			err = a.solveConflict(putReq.Key, putReq.Value.Metadata, putReq.Value.Data)
 			if err != nil {
 				fmt.Println("Solving conflict error", err)
-				//ToDo log
+				a.log.Printf("Solving conflict error: %s\n", err.Error())
 			}
 		} else if err != nil {
 			fmt.Println("Synchronization error", err)
-			//ToDo log
+			a.log.Printf("Got error from server while putting data: %s\n", err.Error())
 		} else {
 			a.cache.put(putReq.Key, putReq.Value)
 		}

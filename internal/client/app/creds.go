@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-const needAuthAfter = 20 * time.Second
+const needAuthAfter = 20 * time.Minute
 
 type Creds struct {
 	username string

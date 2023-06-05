@@ -23,6 +23,7 @@ const (
 
 type Cache struct {
 	cache              map[string]*pb.Value
+	version            int32
 	cacheUpdated       bool
 	putRequests        []*pb.PutReq
 	putRequestsUpdated bool
@@ -40,13 +41,20 @@ func (c *Cache) put(key string, value *pb.Value) {
 	c.cacheUpdated = true
 }
 
-func (c *Cache) setCache(newCache map[string]*pb.Value) {
+func (c *Cache) setCache(newCache map[string]*pb.Value, version int32) {
 	if newCache != nil {
 		c.mutex.Lock()
 		defer c.mutex.Unlock()
 		c.cache = newCache
+		c.version = version
 		c.cacheUpdated = true
 	}
+}
+
+func (c *Cache) getVersion() int32 {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	return c.version
 }
 
 func (c *Cache) getByKey(key string) *pb.Value {
@@ -97,7 +105,7 @@ func (c *Cache) hasPutRequests() bool {
 func (c *Cache) nextPutRequest() (*pb.PutReq, bool) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
-	if !c.hasPutRequests() {
+	if len(c.putRequests) == 0 {
 		return nil, false
 	}
 	return c.putRequests[0], true
@@ -129,7 +137,7 @@ func (c *Cache) flushIntoFile(password string) error {
 			return fmt.Errorf("write cache error: %w", err)
 		}
 		cipherCache := aesGcm.Seal(nil, nonce, binCache, nil)
-		err = c.writeIntoFile(cacheFileName, nonce, cipherCache)
+		err = writeIntoFile(cacheFileName, nonce, cipherCache)
 		if err != nil {
 			return fmt.Errorf("write cache error: %w", err)
 		}
@@ -142,7 +150,7 @@ func (c *Cache) flushIntoFile(password string) error {
 			return fmt.Errorf("write put requests error: %w", err)
 		}
 		cipherPuts := aesGcm.Seal(nil, nonce, binPuts, nil)
-		err = c.writeIntoFile(putsFileName, nonce, cipherPuts)
+		err = writeIntoFile(putsFileName, nonce, cipherPuts)
 		if err != nil {
 			return fmt.Errorf("write put requests error: %w", err)
 		}
@@ -151,7 +159,7 @@ func (c *Cache) flushIntoFile(password string) error {
 	return nil
 }
 
-func (c *Cache) writeIntoFile(fileName string, nonce []byte, data []byte) error {
+func writeIntoFile(fileName string, nonce []byte, data []byte) error {
 	dirname, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -201,7 +209,7 @@ func (c *Cache) readUsernameFromFile() (string, error) {
 	return string(data), nil
 }
 
-func (c *Cache) readFromFile(fileName string, nonceSize int) ([]byte, []byte, error) {
+func readFromFile(fileName string, nonceSize int) ([]byte, []byte, error) {
 	dirname, err := os.UserHomeDir()
 	if err != nil {
 		return nil, nil, err
@@ -233,7 +241,7 @@ func (c *Cache) fillFromFile(password string) error {
 	if err != nil {
 		return fmt.Errorf("get aes gcm error: %w", err)
 	}
-	nonce, cipherCache, err := c.readFromFile(cacheFileName, aesGcm.NonceSize())
+	nonce, cipherCache, err := readFromFile(cacheFileName, aesGcm.NonceSize())
 	if errors.Is(err, os.ErrNotExist) {
 		return errNeedFirstLogin
 	} else if err != nil {
@@ -248,9 +256,9 @@ func (c *Cache) fillFromFile(password string) error {
 	if err != nil {
 		return fmt.Errorf("read cache  error: %w", err)
 	}
-	c.setCache(cache.Data)
+	c.setCache(cache.Data, 0)
 
-	nonce, cipherPuts, err := c.readFromFile(putsFileName, aesGcm.NonceSize())
+	nonce, cipherPuts, err := readFromFile(putsFileName, aesGcm.NonceSize())
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	} else if err != nil {
