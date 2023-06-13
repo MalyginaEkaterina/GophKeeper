@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/MalyginaEkaterina/GophKeeper/internal/client"
 	cpb "github.com/MalyginaEkaterina/GophKeeper/internal/client/proto"
 	pb "github.com/MalyginaEkaterina/GophKeeper/internal/common/proto"
 	"golang.org/x/crypto/ssh/terminal"
@@ -15,13 +17,6 @@ import (
 	"path"
 	"strings"
 	"time"
-)
-
-const (
-	timeout             = 30 * time.Second
-	flushIntoFileAfter  = 30 * time.Second
-	syncWithServerAfter = 30 * time.Second
-	logFileName         = "goph_keeper.log"
 )
 
 var (
@@ -35,8 +30,9 @@ var (
 )
 
 type App struct {
-	stdin *bufio.Reader
-	log   *log.Logger
+	stdin  *bufio.Reader
+	log    *log.Logger
+	config client.Config
 
 	grpcClient *GrpcClient
 
@@ -73,26 +69,47 @@ func (a *App) readString() string {
 	return strings.TrimSpace(s)
 }
 
+// Start reads config from file or fills it in by default. Creates new Grpc Client, opens file for logs,
+// then repeats doLogin or doKeep until it will be broken with exit command.
+// At the end flushes cache into file.
 func Start() {
-	app := App{
-		stdin: bufio.NewReader(os.Stdin),
-		cache: newCache(),
-	}
-
-	serverAddress := os.Getenv("SERVER_ADDRESS")
-	if serverAddress == "" {
-		serverAddress = "localhost:3200"
-	}
-
-	app.grpcClient = newGrpcClient(serverAddress, app.creds.getToken)
-	defer app.grpcClient.Close()
-
 	dirname, err := os.UserHomeDir()
 	if err != nil {
 		panic("Getting user home directory error")
 	}
-	logPath := path.Join(dirname, logFileName)
-	flog, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	cfg := client.Config{
+		ServerAddress:       "localhost:3200",
+		GrpcTimeout:         30,
+		FlushIntoFileAfter:  30,
+		SyncWithServerAfter: 30,
+		LogFilePath:         path.Join(dirname, "goph_keeper.log"),
+		CacheFilePath:       path.Join(dirname, "goph_keeper.data"),
+		PutsFilePath:        path.Join(dirname, "goph_keeper_put.data"),
+		LoggedUserFilePath:  path.Join(dirname, "goph_keeper_user.data"),
+	}
+
+	configName := os.Getenv("CONFIG")
+	if configName != "" {
+		confData, err := os.ReadFile(configName)
+		if err != nil {
+			panic("Error while reading config file")
+		}
+		err = json.Unmarshal(confData, &cfg)
+		if err != nil {
+			panic("Error while parsing config file")
+		}
+	}
+
+	app := App{
+		stdin:  bufio.NewReader(os.Stdin),
+		cache:  newCache(cfg),
+		config: cfg,
+	}
+
+	app.grpcClient = newGrpcClient(cfg.ServerAddress, app.creds.getToken, time.Duration(cfg.GrpcTimeout)*time.Second)
+	defer app.grpcClient.Close()
+
+	flog, err := os.OpenFile(cfg.LogFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -119,8 +136,8 @@ func (a *App) flushCacheIntoFile() {
 	}
 }
 
-func (a *App) runFlush(ctx context.Context) {
-	ticker := time.NewTicker(flushIntoFileAfter)
+// runFlush runs in other goroutine after the first success login and flushes cache into file on ticks.
+func (a *App) runFlush(ctx context.Context, ticker *time.Ticker) {
 	for {
 		select {
 		case <-ticker.C:
@@ -131,8 +148,8 @@ func (a *App) runFlush(ctx context.Context) {
 	}
 }
 
-func (a *App) runSyncWithServer(ctx context.Context) {
-	ticker := time.NewTicker(syncWithServerAfter)
+// runSyncWithServer runs in other goroutine after the first success login and fills cache from server on ticks.
+func (a *App) runSyncWithServer(ctx context.Context, ticker *time.Ticker) {
 	for {
 		select {
 		case <-ticker.C:
@@ -151,6 +168,7 @@ func (a *App) startOffline() {
 	a.creds.clear()
 }
 
+// startOnline sends offline put requests to server if such requests exists.
 func (a *App) startOnline() bool {
 	fmt.Println("Entering online mode")
 	a.offline = false
@@ -361,6 +379,8 @@ func (a *App) getKeyList() error {
 	return nil
 }
 
+// auth does auth on server. At first login if there were offline put requests for logged user sends them to server.
+// Then fills cache from server and flushes it into file.
 func (a *App) auth(username, password string) error {
 	token, err := a.grpcClient.auth(username, password)
 	if errors.Is(err, errIncorrectAuth) {
@@ -418,8 +438,10 @@ func (a *App) auth(username, password string) error {
 func (a *App) doLogin(ctx context.Context) {
 	defer func() {
 		if !a.wasFirstLogin {
-			go a.runFlush(ctx)
-			go a.runSyncWithServer(ctx)
+			flushTicker := time.NewTicker(time.Duration(a.config.FlushIntoFileAfter) * time.Second)
+			go a.runFlush(ctx, flushTicker)
+			syncTicker := time.NewTicker(time.Duration(a.config.SyncWithServerAfter) * time.Second)
+			go a.runSyncWithServer(ctx, syncTicker)
 			a.wasFirstLogin = true
 		}
 	}()
@@ -462,7 +484,10 @@ func (a *App) doOfflineLogin() bool {
 	}
 
 	err = a.cache.fillFromFile(password)
-	if errors.Is(err, errNeedFirstLogin) {
+	if errors.Is(err, errDecryption) {
+		fmt.Println("Wrong password")
+		return false
+	} else if errors.Is(err, errNeedFirstLogin) {
 		fmt.Println("First login on server required")
 		a.offline = false
 		return false

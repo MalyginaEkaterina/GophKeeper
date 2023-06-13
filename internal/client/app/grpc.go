@@ -12,17 +12,20 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"log"
+	"time"
 )
 
+// GrpcClient is struct for working with grpc.
 type GrpcClient struct {
 	conn         *grpc.ClientConn
 	userClient   pb.UserClient
 	keeperClient pb.KeeperClient
 	getToken     func() string
+	timeout      time.Duration
 }
 
-func newGrpcClient(address string, getToken func() string) *GrpcClient {
-	grpcClient := &GrpcClient{getToken: getToken}
+func newGrpcClient(address string, getToken func() string, timeout time.Duration) *GrpcClient {
+	grpcClient := &GrpcClient{getToken: getToken, timeout: timeout}
 	tlsCredential := credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})
 	conn, err := grpc.Dial(address, grpc.WithTransportCredentials(tlsCredential), grpc.WithUnaryInterceptor(grpcClient.clientInterceptor))
 	if err != nil {
@@ -38,6 +41,7 @@ func (g *GrpcClient) Close() {
 	g.conn.Close()
 }
 
+// clientInterceptor is client Interceptor that adds metadata with token into token required requests.
 func (g *GrpcClient) clientInterceptor(ctx context.Context, method string, req interface{},
 	reply interface{}, cc *grpc.ClientConn, invoker grpc.UnaryInvoker,
 	opts ...grpc.CallOption) error {
@@ -56,7 +60,7 @@ func (g *GrpcClient) clientInterceptor(ctx context.Context, method string, req i
 }
 
 func (g *GrpcClient) putByKey(putReq *pb.PutReq) error {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), g.timeout)
 	defer cancel()
 	_, err := g.keeperClient.Put(ctx, putReq)
 	if err != nil {
@@ -77,7 +81,7 @@ func (g *GrpcClient) putByKey(putReq *pb.PutReq) error {
 }
 
 func (g *GrpcClient) getByKey(key string) (*pb.Value, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), g.timeout)
 	defer cancel()
 	resp, err := g.keeperClient.Get(ctx, &pb.GetReq{Key: key})
 	if err != nil {
@@ -98,7 +102,7 @@ func (g *GrpcClient) getByKey(key string) (*pb.Value, error) {
 }
 
 func (g *GrpcClient) getAll(version int32) (map[string]*pb.Value, int32, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), g.timeout)
 	defer cancel()
 	resp, err := g.keeperClient.GetAll(ctx, &pb.GetAllReq{Version: version})
 	if err != nil {
@@ -116,7 +120,7 @@ func (g *GrpcClient) getAll(version int32) (map[string]*pb.Value, int32, error) 
 }
 
 func (g *GrpcClient) getKeyList() ([]string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), g.timeout)
 	defer cancel()
 	resp, err := g.keeperClient.List(ctx, &pb.ListReq{})
 	if err != nil {
@@ -150,7 +154,7 @@ func (g *GrpcClient) register(username, password string) error {
 }
 
 func (g *GrpcClient) auth(username, password string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), g.timeout)
 	defer cancel()
 	authResp, err := g.userClient.Auth(ctx, &pb.AuthReq{Login: username, Password: password})
 	if err != nil {

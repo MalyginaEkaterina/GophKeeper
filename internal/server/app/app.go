@@ -28,6 +28,7 @@ import (
 	"time"
 )
 
+// Start parses envs for config, inits storages, generates TLS cert and starts grpc.Server.
 func Start() {
 	var cfg server.Config
 	flag.StringVar(&cfg.Address, "a", "localhost:3200", "address to listen on")
@@ -68,7 +69,7 @@ func Start() {
 		Certificates: []tls.Certificate{*cert},
 	}
 	tlsCredentials := credentials.NewTLS(conf)
-	serverOpts := []grpc.ServerOption{grpc.UnaryInterceptor(userServer.AuthInterceptor), grpc.Creds(tlsCredentials)}
+	serverOpts := []grpc.ServerOption{grpc.ChainUnaryInterceptor(handlers.LogInterceptor, userServer.AuthInterceptor), grpc.Creds(tlsCredentials)}
 	s := grpc.NewServer(serverOpts...)
 
 	sigint := make(chan os.Signal, 1)

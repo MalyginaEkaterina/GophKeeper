@@ -23,6 +23,7 @@ const (
 	tokenExpiry = 10 * time.Minute
 )
 
+// AuthService is interface for registration and authorization
 type AuthService interface {
 	RegisterUser(ctx context.Context, login string, pass string) error
 	AuthUser(ctx context.Context, login string, pass string) (server.Token, error)
@@ -34,6 +35,7 @@ type AuthServiceImpl struct {
 	SecretKey []byte
 }
 
+// RegisterUser generates hash of password and saves new user with this hash in hex format
 func (a *AuthServiceImpl) RegisterUser(ctx context.Context, login string, pass string) error {
 	hashedPass, err := bcrypt.GenerateFromPassword([]byte(pass), bcrypt.DefaultCost)
 	if err != nil {
@@ -42,6 +44,8 @@ func (a *AuthServiceImpl) RegisterUser(ctx context.Context, login string, pass s
 	return a.Store.AddUser(ctx, login, hex.EncodeToString(hashedPass))
 }
 
+// AuthUser gets user's data by login, checks the password and returns token if the password is correct or
+// ErrIncorrectPassword otherwise
 func (a *AuthServiceImpl) AuthUser(ctx context.Context, login string, pass string) (server.Token, error) {
 	userID, hashedPass, err := a.Store.GetUser(ctx, login)
 	if err != nil {
@@ -62,6 +66,8 @@ func (a *AuthServiceImpl) AuthUser(ctx context.Context, login string, pass strin
 	return token, nil
 }
 
+// CreateToken takes userId and expiry time, creates sign of this data with SecretKey and appends it to this data.
+// Returns the token from this data in hex
 func (a *AuthServiceImpl) CreateToken(id server.UserID) (server.Token, error) {
 	data := binary.BigEndian.AppendUint32(nil, uint32(id))
 	expTime := time.Now().Add(tokenExpiry).Unix()
@@ -73,6 +79,8 @@ func (a *AuthServiceImpl) CreateToken(id server.UserID) (server.Token, error) {
 	return server.Token(hex.EncodeToString(data)), nil
 }
 
+// CheckToken takes userId and expiry time from token, checks if token was not expired and checks the sign in this token.
+// Returns userId
 func (a *AuthServiceImpl) CheckToken(token string) (server.UserID, error) {
 	data, err := hex.DecodeString(token)
 	if err != nil {

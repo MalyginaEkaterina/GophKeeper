@@ -30,6 +30,9 @@ func NewUserServer(authService service.AuthService) *UserServer {
 	return &UserServer{authService: authService}
 }
 
+// Register calls RegisterUser of AuthService.
+// Returns InvalidArgument code, if login or password is empty.
+// Returns AlreadyExists code, if login has been registered already.
 func (s *UserServer) Register(ctx context.Context, in *pb.RegisterReq) (*pb.RegisterResp, error) {
 	if err := validateAuthData(in.Login, in.Password); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -44,6 +47,9 @@ func (s *UserServer) Register(ctx context.Context, in *pb.RegisterReq) (*pb.Regi
 	return &pb.RegisterResp{}, nil
 }
 
+// Auth calls AuthUser of AuthService.
+// Returns InvalidArgument code, if login or password is empty.
+// Returns Unauthenticated code, if password is incorrect.
 func (s *UserServer) Auth(ctx context.Context, in *pb.AuthReq) (*pb.AuthResp, error) {
 	if err := validateAuthData(in.Login, in.Password); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -63,6 +69,8 @@ func GetUserIDFromContext(ctx context.Context) server.UserID {
 	return ctx.Value(userIDKey).(server.UserID)
 }
 
+// AuthInterceptor is interceptor that gets token from token required requests, checks it and gets userId from it.
+// Then puts userId into context. If checks failed returns Unauthenticated code in response.
 func (s *UserServer) AuthInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 	switch info.Server.(type) {
 	case *UserServer:

@@ -17,12 +17,16 @@ var (
 	ErrConflict      = errors.New("update conflict")
 )
 
+// UserStorage is interface for adding and getting of user's data as login, password hash.
 type UserStorage interface {
+	// AddUser saves new user if login is unique or returns ErrAlreadyExists otherwise
 	AddUser(ctx context.Context, login string, hashedPass string) error
+	// GetUser returns userId and hashed password found by login or ErrNotFound if there is no such user
 	GetUser(ctx context.Context, login string) (uID server.UserID, pwd string, err error)
 	Close()
 }
 
+// DataStorage is interface for working with stored user's sensitive data
 type DataStorage interface {
 	GetByKey(ctx context.Context, userID server.UserID, key string) (*pb.Value, error)
 	Put(ctx context.Context, userID server.UserID, key string, value *pb.Value) error

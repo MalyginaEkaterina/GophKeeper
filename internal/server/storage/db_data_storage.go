@@ -63,6 +63,7 @@ func NewDBDataStorage(db *sql.DB) (*DBDataStorage, error) {
 	}, nil
 }
 
+// GetByKey returns value found by userId and key or ErrNotFound if there is no such key for this user
 func (d *DBDataStorage) GetByKey(ctx context.Context, userID server.UserID, key string) (*pb.Value, error) {
 	row := d.getByKey.QueryRowContext(ctx, userID, key)
 	var result pb.Value
@@ -75,6 +76,9 @@ func (d *DBDataStorage) GetByKey(ctx context.Context, userID server.UserID, key 
 	return &result, nil
 }
 
+// Put inserts new row for these userId and key if it is the first version,
+// otherwise updates current row with new data if the version of new data is more than stored version,
+// otherwise returns ErrConflict. Next increases the common version of user's data.
 func (d *DBDataStorage) Put(ctx context.Context, userID server.UserID, key string, value *pb.Value) error {
 	tx, err := d.db.Begin()
 	if err != nil {
@@ -116,6 +120,7 @@ func (d *DBDataStorage) Put(ctx context.Context, userID server.UserID, key strin
 	return nil
 }
 
+// GetAllKeysByUser returns list of key, stored for this userId
 func (d *DBDataStorage) GetAllKeysByUser(ctx context.Context, userID server.UserID) ([]string, error) {
 	rows, err := d.getKeysByUser.QueryContext(ctx, userID)
 	if err != nil {
@@ -141,6 +146,8 @@ func (d *DBDataStorage) GetAllKeysByUser(ctx context.Context, userID server.User
 	return userKeys, nil
 }
 
+// GetAllByUser returns all user's data and current version if the version in request less than version saved for user,
+// otherwise returns ErrNotFound.
 func (d *DBDataStorage) GetAllByUser(ctx context.Context, userID server.UserID, version int32) (map[string]*pb.Value, int32, error) {
 	rows, err := d.getAllByUser.QueryContext(ctx, userID, version)
 	if err != nil {

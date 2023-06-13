@@ -7,31 +7,35 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"github.com/MalyginaEkaterina/GophKeeper/internal/client"
 	pb "github.com/MalyginaEkaterina/GophKeeper/internal/common/proto"
 	"google.golang.org/protobuf/proto"
 	"io"
 	"os"
-	"path"
 	"sync"
 )
 
-const (
-	cacheFileName      = "goph_keeper.data"
-	putsFileName       = "goph_keeper_put.data"
-	loggedUserFileName = "goph_keeper_user.data"
+var (
+	errDecryption = errors.New("file decryption error")
 )
 
+// Cache is struct for working with local cache.
+// When flags cacheUpdated or/and putRequestsUpdated are true,
+// flushIntoFile method saves encrypted protobuf data from Cache into files.
+// Method fillFromFile reads files with encrypted protobuf data,
+// tries to decipher it and if successes puts this data into Cache struct.
 type Cache struct {
 	cache              map[string]*pb.Value
 	version            int32
 	cacheUpdated       bool
 	putRequests        []*pb.PutReq
 	putRequestsUpdated bool
+	config             client.Config
 	mutex              sync.Mutex
 }
 
-func newCache() *Cache {
-	return &Cache{cache: make(map[string]*pb.Value)}
+func newCache(cfg client.Config) *Cache {
+	return &Cache{cache: make(map[string]*pb.Value), config: cfg}
 }
 
 func (c *Cache) put(key string, value *pb.Value) {
@@ -137,7 +141,7 @@ func (c *Cache) flushIntoFile(password string) error {
 			return fmt.Errorf("write cache error: %w", err)
 		}
 		cipherCache := aesGcm.Seal(nil, nonce, binCache, nil)
-		err = writeIntoFile(cacheFileName, nonce, cipherCache)
+		err = writeIntoFile(c.config.CacheFilePath, nonce, cipherCache)
 		if err != nil {
 			return fmt.Errorf("write cache error: %w", err)
 		}
@@ -150,7 +154,7 @@ func (c *Cache) flushIntoFile(password string) error {
 			return fmt.Errorf("write put requests error: %w", err)
 		}
 		cipherPuts := aesGcm.Seal(nil, nonce, binPuts, nil)
-		err = writeIntoFile(putsFileName, nonce, cipherPuts)
+		err = writeIntoFile(c.config.PutsFilePath, nonce, cipherPuts)
 		if err != nil {
 			return fmt.Errorf("write put requests error: %w", err)
 		}
@@ -159,15 +163,10 @@ func (c *Cache) flushIntoFile(password string) error {
 	return nil
 }
 
-func writeIntoFile(fileName string, nonce []byte, data []byte) error {
-	dirname, err := os.UserHomeDir()
-	if err != nil {
-		return err
-	}
-	tmpPath := path.Join(dirname, "tmp_"+fileName)
-	filePath := path.Join(dirname, fileName)
+func writeIntoFile(filePath string, nonce []byte, data []byte) error {
+	tmpPath := filePath + ".tmp"
 	dataWithNonce := append(nonce, data...)
-	err = os.WriteFile(tmpPath, dataWithNonce, 0777)
+	err := os.WriteFile(tmpPath, dataWithNonce, 0777)
 	if err != nil {
 		return err
 	}
@@ -179,17 +178,12 @@ func writeIntoFile(fileName string, nonce []byte, data []byte) error {
 }
 
 func (c *Cache) writeUsernameIntoFile(username string) error {
-	dirname, err := os.UserHomeDir()
+	tmpPath := c.config.LoggedUserFilePath + ".tmp"
+	err := os.WriteFile(tmpPath, []byte(username), 0777)
 	if err != nil {
 		return err
 	}
-	tmpPath := path.Join(dirname, "tmp_"+loggedUserFileName)
-	filePath := path.Join(dirname, loggedUserFileName)
-	err = os.WriteFile(tmpPath, []byte(username), 0777)
-	if err != nil {
-		return err
-	}
-	err = os.Rename(tmpPath, filePath)
+	err = os.Rename(tmpPath, c.config.LoggedUserFilePath)
 	if err != nil {
 		return err
 	}
@@ -197,24 +191,14 @@ func (c *Cache) writeUsernameIntoFile(username string) error {
 }
 
 func (c *Cache) readUsernameFromFile() (string, error) {
-	dirname, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	filePath := path.Join(dirname, loggedUserFileName)
-	data, err := os.ReadFile(filePath)
+	data, err := os.ReadFile(c.config.LoggedUserFilePath)
 	if err != nil {
 		return "", err
 	}
 	return string(data), nil
 }
 
-func readFromFile(fileName string, nonceSize int) ([]byte, []byte, error) {
-	dirname, err := os.UserHomeDir()
-	if err != nil {
-		return nil, nil, err
-	}
-	filePath := path.Join(dirname, fileName)
+func readFromFile(filePath string, nonceSize int) ([]byte, []byte, error) {
 	fileData, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, nil, err
@@ -241,7 +225,7 @@ func (c *Cache) fillFromFile(password string) error {
 	if err != nil {
 		return fmt.Errorf("get aes gcm error: %w", err)
 	}
-	nonce, cipherCache, err := readFromFile(cacheFileName, aesGcm.NonceSize())
+	nonce, cipherCache, err := readFromFile(c.config.CacheFilePath, aesGcm.NonceSize())
 	if errors.Is(err, os.ErrNotExist) {
 		return errNeedFirstLogin
 	} else if err != nil {
@@ -249,7 +233,7 @@ func (c *Cache) fillFromFile(password string) error {
 	}
 	binCache, err := aesGcm.Open(nil, nonce, cipherCache, nil)
 	if err != nil {
-		return fmt.Errorf("decrypt cache error: %w", err)
+		return errDecryption
 	}
 	var cache pb.Cache
 	err = proto.Unmarshal(binCache, &cache)
@@ -258,7 +242,7 @@ func (c *Cache) fillFromFile(password string) error {
 	}
 	c.setCache(cache.Data, 0)
 
-	nonce, cipherPuts, err := readFromFile(putsFileName, aesGcm.NonceSize())
+	nonce, cipherPuts, err := readFromFile(c.config.PutsFilePath, aesGcm.NonceSize())
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	} else if err != nil {
@@ -266,7 +250,7 @@ func (c *Cache) fillFromFile(password string) error {
 	}
 	binPuts, err := aesGcm.Open(nil, nonce, cipherPuts, nil)
 	if err != nil {
-		return fmt.Errorf("decrypt put requests error: %w", err)
+		return errDecryption
 	}
 	var puts pb.PutRequests
 	err = proto.Unmarshal(binPuts, &puts)
