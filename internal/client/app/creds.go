@@ -7,23 +7,21 @@ import (
 
 const needAuthAfter = 20 * time.Minute
 
+// Creds is struct for working with username, password and token.
+// Password and token can be modified from two goroutines.
 type Creds struct {
 	username string
-	password string
-	token    string
 	expiry   time.Time
 	mutex    sync.Mutex
+	password string
+	token    string
 }
 
 func (c *Creds) getUsername() string {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
 	return c.username
 }
 
 func (c *Creds) setUsername(username string) {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
 	c.username = username
 }
 
@@ -55,7 +53,5 @@ func (c *Creds) set(password, token string) {
 }
 
 func (c *Creds) isExpired() bool {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
 	return time.Now().After(c.expiry)
 }
